@@ -1,0 +1,915 @@
+#!/bin/bash
+
+# ogr - one go ocr
+# Git: https://git.nicolaigrossherr.xyz 
+# Doc: https://nicolaigrossherr.xyz
+
+# variables
+SCRIPTNAME=${0##*/}
+SCRIPTVERSION="0.3.3"
+
+
+function ParameterSetup() {
+	VariableDeclarer
+
+	while [[ $# -gt 0 ]]
+	do
+		parameter="$1"
+		case $parameter in
+			-a|--action)
+			action_variable=${2}
+			shift
+			shift
+			;;
+			-S|Scanner)
+			action_variable="Scanner"
+			shift
+			;;
+			-T)
+			action_variable="Test"
+			shift
+			;;
+    	-i|--input)
+	    input_variable="${2}"
+  	  shift 
+    	shift 
+	    ;;
+  	  -o|--output)
+    	output_variable="${2}"
+		  shift 
+	    shift 
+  	  ;;
+    	--tdir)
+	    tmp_dir="$2"
+  	  shift 
+ 		 	shift 
+			;;
+    	--default)
+   		DEFAULT=YES
+    	shift 
+    	;;
+    	*)    
+    	additional_parameter+=("$1") 
+    	shift
+    	;;
+		esac
+	done
+	set -- "${additional_parameter[@]}"
+
+	VariableSetter
+
+#printf "\n"
+#printf "$action_variable\n"
+#printf "$input_variable\n"
+#printf "$output_variable\n"
+#printf "\n"
+}
+
+
+function VariableDeclarer() {
+	declare -g action_variable 
+	declare -g input_variable
+	declare -g output_variable
+
+	declare -a additional_parameter
+
+	declare -g is_automation
+	declare -g last_func
+
+	declare -g cores
+
+	declare -g verbose_status
+	declare -g measure_time
+
+	declare -g tmp_dir
+	declare -A tmp_dirs
+	declare -g tmp_info
+
+	declare -g input_dir
+	declare -g output_dir
+
+	declare -g input_file
+	declare -g output_file
+
+	declare -g file_prefix
+	declare -g file_number
+}
+
+function VariableSetter() {
+	## directories
+	if [ -z $tmp_dir ]; then
+		tmp_suffix=$( date +%s )
+		tmp_dir="./tmp_${SCRIPTNAME}_${tmp_suffix}"
+	fi
+	tmp_info="$tmp_dir/info"
+	input_dir="."
+	output_dir="."
+
+	## files
+	input_file=""
+	output_file=""
+	file_prefix="page"
+	file_number="%03d"
+	image_file_ext="tif"
+
+	## settings
+	dpi="600"
+
+	### programs
+	uext="pbm"
+	ulay="single"
+
+	## multi-threading
+	cores=$( nproc )
+
+	## process
+	last_func=""
+
+	## verbose
+	verbose_status=0
+	measure_time=0
+}
+
+#if [ ! -z "${input_variable}" ]; then
+#	input_variable_file=${input_variable##*/}
+#	input_variable_dir=${input_variable%/*}
+#	if [ ! -z "${input_variable_dir}" ]; then
+#		input_dir=$input_variable_dir
+#	fi
+#	if [ ! -z "${input_variable_file}" ]; then
+#		input_file=$input_variable_file
+#	fi
+#	if [ "${input_file}" = "${input_dir}" ]; then
+#		input_dir="./"
+#	fi
+#	printf "$input_variable_dir\n"
+#	printf "$input_variable_file\n"
+#fi
+
+#if [ ! -z "${output_variable}" ]; then
+#	output_variable_file=${output_variable##*/}
+#	output_variable_dir=${output_variable%/*}
+#	if [ ! -z "${output_variable_dir}" ]; then
+#		output_dir=$output_variable_dir
+#	fi
+#	if [ ! -z "${output_variable_file}" ]; then
+#		output_file=$output_variable_file
+#	fi
+#	if [ "${output_file}" = "${output_dir}" ]; then
+#		output_dir="./"
+#	fi
+#	printf "$output_variable_dir\n"
+#	printf "$output_variable_file\n"
+#fi
+
+function Test() {
+	echo "$action_variable"
+	echo "$1"
+	echo "$2"
+	echo "$3"
+	echo "$4"
+}
+
+
+## helper
+function ScriptHeader() {
+	printf "$SCRIPTNAME $SCRIPTVERSION\n\n"
+}
+
+function PrintStep() {
+#	printf "${#FUNCNAME[@]}"
+	fn_depth=$((${#FUNCNAME[@]} - 3))
+
+	if [ $fn_depth -gt 0 ] && [ $verbose_status -gt 1 ]
+	then
+		printf ' %.0s' $(seq 1 $fn_depth)
+	fi
+	
+	if [ $fn_depth -lt 2 ] && [ -z $input_dir ] || [ $verbose_status -gt 1 ]
+	then
+		if [ ! -z $2 ]; then printf "$2"; fi
+		if [ -z "$1" ]; then
+			printf "${FUNCNAME[ 1 ]}"
+		else
+			printf "$1"
+		fi
+		printf "\n"
+	fi
+}
+
+function ExecTime() {
+	if [ -z $1 ]
+	then
+		return 1
+	fi
+
+	declare -A -g exec_time
+	exec_start="start_time"
+	exec_end="end_time"
+	exec_res="execution_time"
+
+	if [ $1 = "start" ]
+	then
+		if [ -z $2 ]
+		then
+			exec_time[ $exec_start ]="$(date +%s)"
+		elif [ ! -z $2 ]
+		then
+			arg1_exec_start=$2_$exec_start
+			exec_time[ "$arg1_exec_start" ]="$(date +%s)"
+		fi
+	fi
+
+	if [ $1 = "end" ] 
+	then
+		if [ -z $2 ] && [ ${exec_time[ $exec_start ]} ]
+		then
+			exec_time[ $exec_end ]="$(date +%s)"
+			exec_time[ $exec_res ]="$(echo "${exec_time[ $exec_end ]} - ${exec_time[ $exec_start ]}" | bc)"
+			printf "${exec_time[ "$exec_res" ]}"
+		elif [ ! -z $2 ] && [ ${exec_time[ "$arg1_exec_start" ]} ]
+		then
+			arg1_exec_start=$2_$exec_start
+			arg1_exec_end=$2_$exec_end
+			arg1_exec_res=$2_$exec_res
+			exec_time[ "$arg1_exec_end" ]="$(date +%s)"
+			exec_time[ "$arg1_exec_res" ]="$(echo "${exec_time[ "$arg1_exec_end" ]} - ${exec_time[ "$arg1_exec_start" ]}" | bc)"
+			printf "${exec_time[ "$arg1_exec_res" ]}"
+		fi
+		if [ -z $3 ] 
+		then 
+			printf "\n"
+		fi
+	fi
+}
+
+function TimeAnalyser() {
+	if [ $verbose_status -gt 1 ] || [ $measure_time -eq 1 ]
+	then
+		if [ ! -z $3 ]
+		then
+			printf "$3"
+		fi
+		ExecTime $1 $2
+	fi
+}
+
+function InOutDirHandler() {
+#	for l in $( seq 0 $(( ${#FUNCNAME[@]} - 1 )) ); do
+#		printf "${FUNCNAME[ $l ]} fnl\n"
+#	done
+#	printf "$LINENO: $last_func\n"
+#	printf "$LINENO: ${tmp_dirs[ $last_func ]}\n"
+
+	func_call_level="${#FUNCNAME[@]}"
+
+	calling_func=${FUNCNAME[ 1 ]}
+#	printf "$LINENO: $calling_func\n"
+
+	if [ -z $input_dir ] && [ ${tmp_dirs[ $last_func ]} ]; then
+		input_dir=${tmp_dirs[ $last_func ]}
+	fi
+
+	tmp_dirs[ $calling_func ]=$tmp_dir/${calling_func,,}
+#	printf "$LINENO: ${tmp_dirs[ $calling_func ]}\n"
+
+	if [ -z $output_dir ] && [ $func_call_level = "4" ]; then
+		output_dir="${tmp_dirs[ $calling_func ]}"
+	fi
+
+	if [ ! -d $output_dir ]; then
+		mkdir -p $output_dir
+	fi
+
+
+}
+
+function LastFunction() {
+	if [ -z $1 ]; then
+		level="2"
+	else
+		level=$1
+	fi
+	last_func=${FUNCNAME[ $level ]}
+#	printf "Dbg $FUNCNAME: $last_func\n"
+}
+
+function UnsetInOutDir() {
+	input_dir=""
+	output_dir=""
+}
+
+function SilentPost() {
+	LastFunction
+	UnsetInOutDir
+}
+
+
+
+# setup
+function Setup() {
+	PrintStep
+
+	DeleteTmpDirs
+	UnsetInOutDir
+}
+## delete temporary directories
+function DeleteTmpDirs() {
+	PrintStep "Deleting $tmp_dir"
+	
+	rm -Rf $tmp_dir
+}
+## create temporary directories
+function CreateTmpDirs() {
+	PrintStep "Creating $tmp_dir"
+
+	for directory in $directories 
+	do
+		if [ ! -d "$directory" ]
+		then
+			mkdir "$directory"
+		fi
+	done
+}
+
+function File() {
+	Setup "$@"
+
+	PrintStep 
+
+	TimeAnalyser start
+
+	Files
+	Rotate
+	Trim
+	Scantailor
+	Deskew
+	Unpaper
+	Resize
+	OCR
+	Pdf
+
+	TimeAnalyser end
+}
+function Files() {
+	PrintStep
+
+	TimeAnalyser start $FUNCNAME
+
+	InOutDirHandler
+
+	FileHandler
+
+	SilentPost
+	TimeAnalyser end $FUNCNAME
+}
+function FileHandler() {
+	declare -a -g file_types
+	file_types=(image/jpg application/pdf image/png image/tiff)
+	mime=$( file --mime-type -b "${input_variable}" )
+
+	printf "$LINENO: $input_variable\n"
+	printf "$LINENO: $output_variable\n"
+	printf "$LINENO: $input_dir\n"
+	printf "$LINENO: $output_dir\n"
+
+	if [[ " ${file_types[@]} " =~ " ${mime} " ]]
+	then
+		mkdir -p "${output_dir}"
+		mime_ext=${mime##*/}
+		if [ $mime_ext = "tiff" ]; then
+			pages=$(identify "${input_variable}" | wc -l )
+			if [ $pages -gt 1 ]
+			then
+				convert -scene 1 -type bilevel -density $dpi "${input_variable}" "${output_dir}/${file_prefix}${file_number}.${image_file_ext}"
+			else
+				cp "${1}" "${output_dir}/${output_file}"
+			fi
+		fi
+	else
+		printf "Not supported\n"
+	fi
+}
+
+
+# script
+function Scanner() {
+	Setup "$@"
+
+	PrintStep 
+
+	TimeAnalyser start
+
+	Scan
+	Rotate
+	Trim
+	Scantailor
+	Deskew
+	Unpaper
+	Resize
+	OCR
+	Pdf
+
+	TimeAnalyser end
+}
+
+function ScanSingle() {
+	PrintStep 
+
+	TimeAnalyser start
+
+	Scan
+
+	TimeAnalyser end
+}
+
+
+# scanner
+function Scan() {
+	PrintStep
+
+	TimeAnalyser start $FUNCNAME
+
+	InOutDirHandler
+
+	scan_file_prefix="$file_prefix"
+	scan_file_number="$file_number"
+	scan_device="brother3:net1;dev0"
+#	scan_device="brother3:bus4;dev1"
+	scan_color_mode="Black & White"
+#	scan_color_mode="True Gray"
+#	scan_source="Automatic Document Feeder(left aligned)"
+	scan_source="Automatic Document Feeder(left aligned,Duplex)"
+	scan_resolution="$dpi"
+	scan_format="tiff"
+	scan_file_extension=$scan_format
+	scan_directory="$output_dir"
+	scan_file_format="/$scan_file_prefix$scan_file_number.$scan_file_extension"
+	scan_file_path="$scan_directory$scan_file_format"
+
+	if [ $verbose_status -gt 2 ]
+	then
+		scanimage -B \
+			--device-name "$scan_device" \
+			--mode "$scan_color_mode" \
+			--source "$scan_source" \
+			--resolution "$scan_resolution" \
+			--format=$scan_format \
+			--batch=$scan_file_path \
+			--progress \
+			--verbose
+	else
+		scanimage -B \
+			--device-name "$scan_device" \
+			--mode "$scan_color_mode" \
+			--source "$scan_source" \
+			--resolution "$scan_resolution" \
+			--format=$scan_format \
+			--batch=$scan_file_path \
+			--brightness -25 \
+			--progress >/dev/null 2>&1
+	fi
+
+	SilentPost
+	TimeAnalyser end $FUNCNAME
+}
+
+# rotate
+function Rotate() {
+	PrintStep
+
+	TimeAnalyser start ${FUNCNAME[ 0 ]}
+
+	InOutDirHandler
+
+	AnalysingRotation
+	RotateAuto
+
+	SilentPost
+
+	TimeAnalyser end ${FUNCNAME[ 0 ]}
+}
+function AnalysingRotation() {
+	PrintStep
+
+	TimeAnalyser start ${FUNCNAME[ 0 ]}
+
+	local files=$( find $input_dir -maxdepth 1 -type f -name "*" )
+	if [ ! -d $tmp_info ]; then
+		mkdir -p $tmp_info
+	fi
+	local threads="$cores"
+
+	for image in $files; do 
+		file_from_path="${image##*/}"
+		file_wo_ext="${file_from_path%.*}"
+		((process=process%threads)); ((process++==0)) && wait
+		if [ $verbose_status -gt 2 ]
+		then
+		OMP_THREAD_LIMIT=1 \
+			tesseract --dpi $dpi \
+			-c tessedit_page_number=0 \
+			--psm 0 \
+			$image \
+			- \
+			| awk '/Rotate/ {print $2}' > $tmp_info/${file_wo_ext}_rotation &
+		else
+		OMP_THREAD_LIMIT=1 \
+			tesseract --dpi $(( $dpi / 2 )) \
+			-c tessedit_page_number=0 \
+			--psm 0 \
+			$image \
+			- \
+			/dev/null 2>&1 \
+			| awk '/Rotate/ {print $2}' > $tmp_info/${file_wo_ext}_rotation &
+		fi
+	done
+	wait
+
+	TimeAnalyser end ${FUNCNAME[ 0 ]} "›"
+}
+## rotate auto
+function RotateAuto() {
+	PrintStep
+
+	TimeAnalyser start ${FUNCNAME[ 0 ]}
+
+	if [ $verbose_status -gt 2 ]
+	then
+		verbose="-verbose"
+	else 
+		verbose=""
+	fi
+
+	local files=$( find $input_dir -maxdepth 1 -type f -name "*" )
+	local threads="$cores"
+
+	for image in $files; do 
+		file_from_path="${image##*/}"
+		file_wo_ext="${file_from_path%.*}"
+		rotation=$( cat "$tmp_info/${file_wo_ext}_rotation" )
+		((process=process%threads)); ((process++==0)) && wait
+		convert $image \
+			$verbose \
+			-rotate \
+			$rotation \
+			$output_dir/${image##*/} &
+	done 
+	wait
+
+	TimeAnalyser end ${FUNCNAME[ 0 ]} "›"
+}
+## rotate page
+#function RotatePage() {}
+## rotate backside
+#function RotateBackside() {}
+
+# trim
+function Trim() {
+	PrintStep
+
+	TimeAnalyser start $FUNCNAME
+
+	InOutDirHandler
+
+	TrimAuto
+
+	SilentPost
+
+	TimeAnalyser end $FUNCNAME
+}
+# trim auto
+function TrimAuto() {
+	PrintStep
+
+	if [ $verbose_status -gt 2 ]
+	then
+		verbose="-verbose"
+	else 
+		verbose=""
+	fi
+
+	local files=$( find $input_dir -maxdepth 1 -type f -name "*" )
+	local threads="$cores"
+
+	for image in $files; do
+		((process=process%threads)); ((process++==0)) && wait
+		convert $image \
+			$verbose \
+			-trim \
+			+repage \
+			$output_dir/${image##*/} &
+	done
+	wait
+}
+
+# scantailor
+function Scantailor() {
+	PrintStep
+
+	TimeAnalyser start $FUNCNAME
+
+	InOutDirHandler
+
+	ScantailorCli
+
+	SilentPost
+
+	TimeAnalyser end $FUNCNAME
+}
+## scantailor-cli
+function ScantailorCli() {
+	PrintStep
+
+	if [ $verbose_status -gt 2 ]
+	then
+		verbose="--verbose"
+	else
+		verbose=""
+	fi
+
+	local files=$( find $input_dir -maxdepth 1 -type f -name "*" )
+	local threads="$cores"
+
+	st_color_mode="color_grayscale"#black_and_white
+
+	for image in $files; do
+		((process=process%threads)); ((process++==0)) && wait
+    scantailor-cli --start-filter=1 \
+			--end-filter=6 \
+			--normalize-illumination \
+			--white-margins \
+			--alignment-vertical=top \
+			--alignment-horizontal=center \
+			--margin=10 \
+			--despeckle=aggressive \
+			--content-detection=aggressive \
+			--deskew=auto \
+			--threshold=-5 \
+			--dpi=$dpi \
+			--output-dpi=$dpi \
+			--color-mode=$st_color_mode \
+			--layout=0 \
+			$image \
+			$output_dir &
+	done
+	wait
+}
+
+# deskew
+function Deskew() {
+	PrintStep
+
+	TimeAnalyser start $FUNCNAME
+
+	InOutDirHandler
+
+	DeskewAuto
+
+	SilentPost
+
+	TimeAnalyser end $FUNCNAME
+}
+## deskew auto
+function DeskewAuto() {
+	PrintStep
+
+	local files=$( find $input_dir -maxdepth 1 -type f -name "*" )
+	local threads="$cores"
+
+	for image in $files; do
+		((process=process%threads)); ((process++==0)) && wait
+		if [ $verbose_status -gt 2 ]
+		then
+			deskew -q lanczos \
+				-b FFFFFFFF \
+				-a 25 \
+				-o $output_dir/${image##*/} \
+				$image &
+		else
+			deskew -q lanczos \
+				-b FFFFFFFF \
+				-a 25 \
+				-o $output_dir/${image##*/} \
+				$image >/dev/null 2>/dev/null &
+		fi
+	done
+	wait
+}
+
+# unpaper
+function Unpaper() {
+	PrintStep
+
+	TimeAnalyser start $FUNCNAME
+
+	InOutDirHandler
+
+	UnpaperAuto
+
+	SilentPost
+
+	TimeAnalyser end $FUNCNAME
+}
+## unpaper auto
+function UnpaperAuto() {
+	PrintStep
+
+	local files=$( find $input_dir -maxdepth 1 -type f -name "*" )
+	local threads="$cores"
+
+	for image in $files; do
+		file_from_path="${image##*/}"
+		fup="${file_from_path%.*}.$uext"
+		((process=process%threads)); ((process++==0)) && wait
+		if [ $verbose_status -gt 2 ]
+		then
+			unpaper --dpi $dpi \
+				-t $uext \
+				--verbose \
+				--overwrite \
+				$image \
+				$output_dir/$fup &
+		else
+			unpaper --dpi $dpi \
+				-t $uext \
+				--overwrite \
+				--no-deskew \
+				$image \
+				$output_dir/$fup \
+				>/dev/null 2>&1 &
+		fi
+	done
+	wait
+}
+
+# resize
+function Resize() {
+	PrintStep
+
+	TimeAnalyser start $FUNCNAME
+
+	InOutDirHandler
+
+	ResizeAuto
+
+	SilentPost
+
+	TimeAnalyser end $FUNCNAME
+}
+## resize auto
+function ResizeAuto() {
+	PrintStep 
+
+	if [ $verbose_status -gt 2 ]
+	then
+		verbose="-verbose"
+	else
+		verbose=""
+	fi
+
+	local files=$( find $input_dir -maxdepth 1 -type f -name "*" )
+	local threads="$cores"
+
+	for image in $files; do
+		((process=process%threads)); ((process++==0)) && wait
+		convert $image \
+			$verbose \
+			-type Bilevel \
+			-compress Fax \
+			-quality 9 \
+			-resize 3496x \
+			$output_dir/${image##*/} &
+	done
+	wait
+}
+
+# OCR
+function OCR() {
+	PrintStep
+
+	TimeAnalyser start $FUNCNAME
+
+	InOutDirHandler
+
+	OCRsingle
+
+	SilentPost
+
+	TimeAnalyser end $FUNCNAME
+}
+
+## ocr single
+function OCRsingle() {
+	PrintStep
+
+	local files=$( find $input_dir -maxdepth 1 -type f -name "*" )
+	#local threads=$(( $cores / 4 ))
+	local threads="$cores"
+
+	for image in $files; do
+		local file_from_path="${image##*/}"
+		local file_wo_ext="${file_from_path%.*}"
+		((process=process%threads)); ((process++==0)) && wait
+		if [ $verbose_status -gt 2 ]
+		then
+			OMP_THREAD_LIMIT=1 \
+				tesseract --dpi $(( $dpi / 2 )) \
+				-l deu \
+				--psm 12 \
+				$image \
+				$output_dir/$file_wo_ext \
+				pdf txt &
+		else
+			OMP_THREAD_LIMIT=1 \
+				tesseract --dpi $(( $dpi / 2 )) \
+				-l deu \
+				--psm 12 \
+				$image \
+				$output_dir/$file_wo_ext \
+				pdf txt >/dev/null 2>&1 &
+		fi
+	done
+	wait
+
+}
+
+## ocr auto
+function OCRmulti() {
+	PrintStep
+
+	printf "$input_variable\n"
+	printf "$output_variable\n"
+
+	tesseract --dpi $dpi \
+		-l deu \
+		--psm 12 \
+		${input_variable} \
+		${output_variable} \
+		pdf
+}
+
+
+function Pdf() {
+	PrintStep
+
+	TimeAnalyser start $FUNCNAME
+
+	InOutDirHandler
+
+	MergePdf
+
+	SilentPost
+
+	TimeAnalyser end $FUNCNAME
+}
+function MergePdf() {
+	PrintStep
+
+	gs -sDEVICE=pdfwrite \
+		-r$(( $dpi / 4 )) \
+		-sPAPERSIZE=a4 \
+		-dPDFSETTINGS=/ebook \
+		-dCompatibilityLevel=1.4 \
+		-dNOPAUSE \
+		-dQUIET \
+		-dBATCH \
+		-o ${output_dir}/result.pdf \
+		${input_dir}/*.pdf
+}
+
+# Output
+function MergeMpTif() {
+	printf "\n› Merging\n"
+
+	tiffcp $tpre/* $tmp_dir/merge.tif
+}
+
+function_dump=$( declare -f $1 >/dev/null 2>&1 )
+function_exists="$?"
+#echo "$function_exists"
+
+#if declare -f $1 > /dev/null 
+if [ $function_exists -eq 0 ]
+then
+	function_call=$1
+	shift
+	ParameterSetup "$@"
+	"$function_call" "$@"
+else
+	ParameterSetup "$@"
+#	echo "$action_variable"
+	if declare -f $action_variable > /dev/null
+	then 
+		"$action_variable" "$@"
+	elif [ ! -z $1 ]
+	then
+		printf "'$1' does not exist\n" >&2
+	elif [ ! -z $action_variable ]
+	then
+		printf "'$action_variable' does not exist\n" >&2
+	else
+		printf "Parameter needed, see --help\n" >&2
+	fi
+	exit 1
+fi
